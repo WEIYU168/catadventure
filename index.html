@@ -1,0 +1,1020 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>小貓童話冒險 - 動作冒險版</title>
+    
+    <!-- 引入 Tailwind CSS、FontAwesome 與 React 相關套件 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+            overflow: hidden; 
+            background-color: #2d3748; 
+            touch-action: none; /* 避免手機端瀏覽器默認的滑動行為 */
+        }
+        #root { 
+            width: 100vw; 
+            height: 100vh; 
+        }
+        .canvas-container { 
+            position: relative; 
+            width: 100%; 
+            height: 100%; 
+        }
+        canvas { 
+            display: block; 
+            width: 100%; 
+            height: 100%; 
+        }
+        /* 自訂隱藏捲軸但可滾動的樣式 */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // 通用圖示元件
+        const Icon = ({ name, className = "", size, color }) => (
+            <i className={`fa-solid fa-${name} ${className}`} style={{ fontSize: size ? `${size}px` : undefined, color: color }}></i>
+        );
+
+        // 6 大關卡資料 (加入完整內容)
+        const LEVELS = [
+            {
+                id: 1, theme: '小紅帽', title: '危險的森林', type: 'path', color: 'bg-red-100 border-red-400 text-red-800',
+                intro: ["喵！我是守護者小貓。", "大野狼在路上佈下了陷阱，引導小紅帽安全抵達奶奶家！"],
+                outro: ["太棒了！小紅帽平安抵達奶奶家了。", "【寓意】遇到陌生人時要保持警覺！"]
+            },
+            {
+                id: 2, theme: '灰姑娘', title: '午夜的魔法', type: 'puzzle', color: 'bg-blue-100 border-blue-400 text-blue-800',
+                intro: ["魔法出現了小失誤，禮服碎片散落一地！", "趕快拼湊完整，讓灰姑娘去舞會。"],
+                outro: ["魔法順利生效！灰姑娘前往城堡了。", "【寓意】即使處於逆境，也要保持善良並隨時準備。"]
+            },
+            {
+                id: 3, theme: '青蛙王子', title: '誠實的考驗', type: 'quiz', color: 'bg-green-100 border-green-400 text-green-800',
+                intro: ["公主不想遵守與青蛙同桌吃飯的約定...", "透過問答，讓公主明白誠信的重要性！"],
+                outro: ["青蛙變回了王子！", "【寓意】答應別人的事情就應該努力做到。"]
+            },
+            {
+                id: 4, theme: '睡美人', title: '荊棘的詛咒', type: 'shooter', color: 'bg-purple-100 border-purple-400 text-purple-800',
+                intro: ["城堡被邪惡的黑荊棘包圍了！", "點擊畫面上的荊棘核心，把它們全部淨化。"],
+                outro: ["荊棘消散，城堡重新甦醒了！", "【寓意】面對重重困難，只要有勇氣就能突破。"]
+            },
+            {
+                id: 5, theme: '白雪公主', title: '對抗壞皇后', type: 'combat', color: 'bg-yellow-100 border-yellow-400 text-yellow-800',
+                intro: ["壞皇后派出了巨大的毒蘋果怪物！", "利用對戰技巧，在回合制戰鬥中擊敗這個難纏的對手！"],
+                outro: ["成功擊退了毒蘋果怪物！", "【寓意】勇敢面對困難，冷靜應對就能戰勝邪惡。"]
+            },
+            {
+                id: 6, theme: '傑克與魔豆', title: '躲避巨人', type: 'dodge', color: 'bg-emerald-100 border-emerald-400 text-emerald-800',
+                intro: ["傑克爬上了魔豆藤！", "快躲開上方掉下來的落石，堅持到底！"],
+                outro: ["成功帶著金雞蛋回到地面了！", "【寓意】冒險固然刺激，但也需要機智與敏捷。"]
+            }
+        ];
+
+        // 獨立的 2D 遊戲引擎 (負責大世界探索、戰鬥)
+        class GameEngine {
+            constructor(canvas, callbacks) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.callbacks = callbacks; // { onEnterLevel, onGameOver, onEnterShop, onUpdateHUD }
+                
+                // 遊戲狀態
+                this.isRunning = false;
+                this.lastTime = 0;
+                
+                // 地圖設定
+                this.mapWidth = 2400;
+                this.mapHeight = 1800;
+                this.bgImage = new Image();
+                this.bgImage.src = '背景.png';
+                this.bgLoaded = false;
+                this.bgImage.onload = () => { this.bgLoaded = true; };
+
+                // 按鍵與觸控狀態
+                this.keys = { w: false, a: false, s: false, d: false, ' ': false };
+                this.joystick = { active: false, x: 0, y: 0, baseX: 0, baseY: 0 };
+                
+                // 玩家資料
+                this.player = {
+                    x: this.mapWidth / 2, y: this.mapHeight / 2,
+                    size: 60, speed: 300, 
+                    hp: 100, maxHp: 100,
+                    coins: 0, hasWeapon: false,
+                    attackCooldown: 0, isAttacking: false, attackDir: 'right'
+                };
+
+                // 遊戲實體陣列
+                this.beasts = [];
+                this.coins = [];
+                this.weapons = [];
+                
+                // 地標與傳送門
+                this.shop = { x: this.mapWidth/2 + 200, y: this.mapHeight/2 - 200, size: 80 };
+                this.portals = [
+                    { id: 1, x: 300, y: 300, size: 60, color: 'red' },
+                    { id: 2, x: 2000, y: 300, size: 60, color: 'blue' },
+                    { id: 3, x: 300, y: 1500, size: 60, color: 'green' },
+                    { id: 4, x: 2000, y: 1500, size: 60, color: 'purple' },
+                    { id: 5, x: 1200, y: 1500, size: 60, color: 'orange' },
+                    { id: 6, x: 1200, y: 300, size: 60, color: 'teal' }
+                ];
+
+                this.initEntities();
+                this.bindEvents();
+            }
+
+            initEntities() {
+                // 產生隨機野獸
+                for(let i=0; i<15; i++) {
+                    this.beasts.push({
+                        x: Math.random() * this.mapWidth,
+                        y: Math.random() * this.mapHeight,
+                        size: 55, speed: 100 + Math.random() * 50,
+                        hp: 30, damage: 10,
+                        knockback: 0, knockbackDir: {x:0, y:0}
+                    });
+                }
+                // 產生隨機寶箱(原本為金幣)
+                for(let i=0; i<20; i++) {
+                    this.coins.push({
+                        x: Math.random() * this.mapWidth,
+                        y: Math.random() * this.mapHeight,
+                        size: 40
+                    });
+                }
+                // 放置一把武器在出生點附近
+                this.weapons.push({
+                    x: this.player.x - 150, y: this.player.y + 100, size: 30
+                });
+            }
+
+            bindEvents() {
+                this.handleKeyDown = (e) => {
+                    if (e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') this.keys.w = true;
+                    if (e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') { this.keys.a = true; this.player.attackDir = 'left'; }
+                    if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') this.keys.s = true;
+                    if (e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') { this.keys.d = true; this.player.attackDir = 'right'; }
+                    if (e.key === ' ') this.keys[' '] = true;
+                };
+                this.handleKeyUp = (e) => {
+                    if (e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') this.keys.w = false;
+                    if (e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') this.keys.a = false;
+                    if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') this.keys.s = false;
+                    if (e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') this.keys.d = false;
+                    if (e.key === ' ') this.keys[' '] = false;
+                };
+
+                window.addEventListener('keydown', this.handleKeyDown);
+                window.addEventListener('keyup', this.handleKeyUp);
+                
+                // 視窗調整大小
+                window.addEventListener('resize', () => {
+                    this.canvas.width = window.innerWidth;
+                    this.canvas.height = window.innerHeight;
+                });
+            }
+
+            destroy() {
+                this.isRunning = false;
+                window.removeEventListener('keydown', this.handleKeyDown);
+                window.removeEventListener('keyup', this.handleKeyUp);
+            }
+
+            start() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+                this.isRunning = true;
+                this.lastTime = performance.now();
+                requestAnimationFrame((t) => this.loop(t));
+                this.callbacks.onUpdateHUD(this.player.hp, this.player.coins, this.player.hasWeapon);
+            }
+
+            loop(timestamp) {
+                if (!this.isRunning) return;
+                const dt = (timestamp - this.lastTime) / 1000;
+                this.lastTime = timestamp;
+
+                this.update(dt);
+                this.draw();
+
+                if (this.isRunning) {
+                    requestAnimationFrame((t) => this.loop(t));
+                }
+            }
+
+            update(dt) {
+                // 1. 更新玩家位置 (鍵盤)
+                let dx = 0; let dy = 0;
+                if (this.keys.w) dy -= 1;
+                if (this.keys.s) dy += 1;
+                if (this.keys.a) dx -= 1;
+                if (this.keys.d) dx += 1;
+                
+                // 虛擬搖桿輸入處理(手機端)
+                if (this.joystick.active) {
+                    dx = this.joystick.x;
+                    dy = this.joystick.y;
+                    if (dx < 0) this.player.attackDir = 'left';
+                    if (dx > 0) this.player.attackDir = 'right';
+                }
+
+                if (dx !== 0 && dy !== 0 && !this.joystick.active) {
+                    const length = Math.sqrt(dx*dx + dy*dy);
+                    dx /= length; dy /= length;
+                }
+                
+                this.player.x += dx * this.player.speed * dt;
+                this.player.y += dy * this.player.speed * dt;
+
+                // 邊界限制
+                this.player.x = Math.max(this.player.size/2, Math.min(this.mapWidth - this.player.size/2, this.player.x));
+                this.player.y = Math.max(this.player.size/2, Math.min(this.mapHeight - this.player.size/2, this.player.y));
+
+                // 2. 玩家攻擊邏輯
+                if (this.player.attackCooldown > 0) {
+                    this.player.attackCooldown -= dt;
+                }
+                if (this.keys[' '] && this.player.hasWeapon && this.player.attackCooldown <= 0) {
+                    this.player.isAttacking = true;
+                    this.player.attackCooldown = 0.5;
+                    // 偵測武器碰撞
+                    this.beasts.forEach(beast => {
+                        const dist = Math.hypot(beast.x - this.player.x, beast.y - this.player.y);
+                        const inRange = dist < 120; // 稍微加大攻擊範圍
+                        let inDirection = false;
+                        if (this.player.attackDir === 'right' && beast.x > this.player.x - 30) inDirection = true;
+                        if (this.player.attackDir === 'left' && beast.x < this.player.x + 30) inDirection = true;
+                        
+                        if (inRange && inDirection) {
+                            beast.hp -= 34; // 揮三下死
+                            beast.knockback = 0.2; 
+                            beast.knockbackDir = { 
+                                x: (beast.x - this.player.x) / dist, 
+                                y: (beast.y - this.player.y) / dist 
+                            };
+                            if (beast.hp <= 0) {
+                                this.coins.push({ x: beast.x, y: beast.y, size: 40 });
+                            }
+                        }
+                    });
+                } else if (this.player.attackCooldown < 0.3) {
+                    this.player.isAttacking = false;
+                }
+
+                this.beasts = this.beasts.filter(b => b.hp > 0); // 移除死亡野獸
+
+                // 3. 更新野獸位置與碰撞
+                let hpChanged = false;
+                this.beasts.forEach(beast => {
+                    if (beast.knockback > 0) {
+                        beast.knockback -= dt;
+                        beast.x += beast.knockbackDir.x * 300 * dt;
+                        beast.y += beast.knockbackDir.y * 300 * dt;
+                    } else {
+                        // 追逐玩家
+                        const dist = Math.hypot(this.player.x - beast.x, this.player.y - beast.y);
+                        if (dist < 600) {
+                            beast.x += ((this.player.x - beast.x) / dist) * beast.speed * dt;
+                            beast.y += ((this.player.y - beast.y) / dist) * beast.speed * dt;
+                        }
+                        
+                        // 野獸碰到玩家
+                        if (dist < (this.player.size/2 + beast.size/2)) {
+                            this.player.hp -= beast.damage * dt; // 持續扣血
+                            hpChanged = true;
+                            // 些微反作用力
+                            this.player.x -= ((beast.x - this.player.x) / dist) * 10;
+                            this.player.y -= ((beast.y - this.player.y) / dist) * 10;
+                        }
+                    }
+                });
+
+                // 4. 收集金幣
+                let coinsChanged = false;
+                this.coins = this.coins.filter(c => {
+                    const dist = Math.hypot(this.player.x - c.x, this.player.y - c.y);
+                    if (dist < this.player.size/2 + c.size/2 + 20) { // 稍微增加吸取範圍
+                        this.player.coins += 10;
+                        coinsChanged = true;
+                        return false;
+                    }
+                    return true;
+                });
+
+                // 5. 拾取武器
+                this.weapons = this.weapons.filter(w => {
+                    const dist = Math.hypot(this.player.x - w.x, this.player.y - w.y);
+                    if (dist < this.player.size/2 + w.size/2 + 20) {
+                        this.player.hasWeapon = true;
+                        coinsChanged = true;
+                        return false;
+                    }
+                    return true;
+                });
+
+                // 6. 碰觸商店
+                const distToShop = Math.hypot(this.player.x - this.shop.x, this.player.y - this.shop.y);
+                if (distToShop < this.player.size/2 + this.shop.size/2) {
+                    this.isRunning = false;
+                    this.keys = { w: false, a: false, s: false, d: false, ' ': false };
+                    this.callbacks.onEnterShop();
+                    this.player.y += 50; 
+                }
+
+                // 7. 碰觸關卡傳送門
+                this.portals.forEach(p => {
+                    const dist = Math.hypot(this.player.x - p.x, this.player.y - p.y);
+                    if (dist < this.player.size/2 + p.size/2) {
+                        this.isRunning = false;
+                        this.keys = { w: false, a: false, s: false, d: false, ' ': false };
+                        this.callbacks.onEnterLevel(p.id);
+                        this.player.y += 50;
+                    }
+                });
+
+                // 8. 狀態判定
+                if (this.player.hp <= 0) {
+                    this.isRunning = false;
+                    this.callbacks.onGameOver();
+                }
+
+                if (hpChanged || coinsChanged) {
+                    this.callbacks.onUpdateHUD(this.player.hp, this.player.coins, this.player.hasWeapon);
+                }
+            }
+
+            draw() {
+                const camX = this.canvas.width/2 - this.player.x;
+                const camY = this.canvas.height/2 - this.player.y;
+
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.ctx.save();
+                this.ctx.translate(camX, camY);
+
+                // 1. 繪製背景
+                if (this.bgLoaded) {
+                    this.ctx.drawImage(this.bgImage, 0, 0, this.mapWidth, this.mapHeight);
+                } else {
+                    this.ctx.fillStyle = '#9cb39c';
+                    this.ctx.fillRect(0, 0, this.mapWidth, this.mapHeight);
+                    this.ctx.strokeStyle = '#8fa38f';
+                    this.ctx.lineWidth = 2;
+                    for(let i=0; i<this.mapWidth; i+=100) {
+                        this.ctx.beginPath(); this.ctx.moveTo(i, 0); this.ctx.lineTo(i, this.mapHeight); this.ctx.stroke();
+                    }
+                    for(let i=0; i<this.mapHeight; i+=100) {
+                        this.ctx.beginPath(); this.ctx.moveTo(0, i); this.ctx.lineTo(this.mapWidth, i); this.ctx.stroke();
+                    }
+                }
+
+                // 2. 繪製關卡傳送門
+                this.portals.forEach(p => {
+                    this.ctx.beginPath();
+                    this.ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+                    this.ctx.fillStyle = p.color;
+                    this.ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 200) * 0.2; // 閃爍效果
+                    this.ctx.fill();
+                    this.ctx.globalAlpha = 1.0;
+                    this.ctx.strokeStyle = 'white';
+                    this.ctx.lineWidth = 4;
+                    this.ctx.stroke();
+                    
+                    this.ctx.fillStyle = 'white';
+                    this.ctx.font = 'bold 30px Arial';
+                    this.ctx.textAlign = 'center';
+                    this.ctx.textBaseline = 'middle';
+                    this.ctx.fillText(p.id.toString(), p.x, p.y);
+                });
+
+                // 3. 繪製商店
+                this.ctx.font = '60px Arial';
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText('🏪', this.shop.x, this.shop.y);
+                this.ctx.fillStyle = 'white';
+                this.ctx.font = '20px Arial';
+                this.ctx.fillText('商店', this.shop.x, this.shop.y + 45);
+
+                // 4. 繪製武器與寶箱
+                this.weapons.forEach(w => { this.ctx.font = '40px Arial'; this.ctx.fillText('🗡️', w.x, w.y); });
+                this.coins.forEach(c => {
+                    const hw = c.size / 2;
+                    const hh = c.size / 2.5;
+                    this.ctx.fillStyle = '#8B4513';
+                    this.ctx.fillRect(c.x - hw, c.y - hh/2, c.size, hh);
+                    this.ctx.strokeStyle = '#3e1f08';
+                    this.ctx.lineWidth = 3;
+                    this.ctx.strokeRect(c.x - hw, c.y - hh/2, c.size, hh);
+                    this.ctx.beginPath();
+                    this.ctx.arc(c.x, c.y - hh/2, hw, Math.PI, 0);
+                    this.ctx.fillStyle = '#D2691E';
+                    this.ctx.fill();
+                    this.ctx.stroke();
+                    this.ctx.fillStyle = '#FFD700';
+                    this.ctx.fillRect(c.x - 5, c.y - hh/2 - 3, 10, 10);
+                    this.ctx.lineWidth = 2;
+                    this.ctx.strokeRect(c.x - 5, c.y - hh/2 - 3, 10, 10);
+                });
+
+                // 5. 繪製野獸
+                this.beasts.forEach(b => {
+                    this.ctx.font = '55px Arial';
+                    this.ctx.fillText('🐺', b.x, b.y);
+                    this.ctx.fillStyle = 'red';
+                    this.ctx.fillRect(b.x - 20, b.y - 35, 40 * (b.hp/30), 5);
+                });
+
+                // 6. 繪製玩家 (小貓)
+                this.ctx.font = '60px Arial';
+                if (this.player.attackDir === 'left') {
+                    this.ctx.save();
+                    this.ctx.scale(-1, 1);
+                    this.ctx.fillText('🐱', -this.player.x, this.player.y);
+                    this.ctx.restore();
+                } else {
+                    this.ctx.fillText('🐱', this.player.x, this.player.y);
+                }
+
+                // 7. 繪製攻擊特效
+                if (this.player.isAttacking) {
+                    this.ctx.beginPath();
+                    if (this.player.attackDir === 'right') {
+                        this.ctx.arc(this.player.x, this.player.y, 60, -Math.PI/4, Math.PI/4);
+                    } else {
+                        this.ctx.arc(this.player.x, this.player.y, 60, Math.PI - Math.PI/4, Math.PI + Math.PI/4);
+                    }
+                    this.ctx.lineTo(this.player.x, this.player.y);
+                    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+                    this.ctx.fill();
+                    
+                    this.ctx.font = '40px Arial';
+                    const swordX = this.player.attackDir === 'right' ? this.player.x + 30 : this.player.x - 30;
+                    this.ctx.fillText('🗡️', swordX, this.player.y);
+                }
+
+                this.ctx.restore();
+            }
+        }
+
+        // ==========================================
+        // 主應用程式 (React)
+        // ==========================================
+        function App() {
+            const [view, setView] = useState('menu'); // menu, overworld, intro, game, outro, shop, gameover
+            const [currentLevelId, setCurrentLevelId] = useState(null);
+            
+            // 全域玩家狀態
+            const [playerState, setPlayerState] = useState({ hp: 100, coins: 0, hasWeapon: false });
+            
+            // 音樂狀態與參考
+            const [isMuted, setIsMuted] = useState(false);
+            const bgmRef = useRef(null);
+
+            // Canvas 引擎實例保存
+            const engineRef = useRef(null);
+            const canvasRef = useRef(null);
+
+            // 啟動或恢復大世界
+            const startOverworld = () => {
+                // 嘗試播放背景音樂 (需使用者互動後才能播放)
+                if (bgmRef.current && bgmRef.current.paused) {
+                    bgmRef.current.play().catch(e => console.log("等待互動才能播放音樂:", e));
+                }
+
+                setView('overworld');
+                setTimeout(() => {
+                    if (!engineRef.current && canvasRef.current) {
+                        engineRef.current = new GameEngine(canvasRef.current, {
+                            onEnterLevel: (id) => { setCurrentLevelId(id); setView('intro'); },
+                            onGameOver: () => { setView('gameover'); },
+                            onEnterShop: () => { setView('shop'); },
+                            onUpdateHUD: (hp, coins, hasWeapon) => {
+                                setPlayerState({ hp: Math.max(0, Math.floor(hp)), coins, hasWeapon });
+                            }
+                        });
+                    }
+                    if (engineRef.current) engineRef.current.start();
+                }, 100);
+            };
+
+            const resumeOverworld = () => {
+                setView('overworld');
+                setTimeout(() => {
+                    if (engineRef.current) engineRef.current.start();
+                }, 100);
+            };
+
+            const buyHealth = () => {
+                if (playerState.coins >= 50 && engineRef.current) {
+                    engineRef.current.player.coins -= 50;
+                    engineRef.current.player.hp = Math.min(100, engineRef.current.player.hp + 50);
+                    setPlayerState(prev => ({ ...prev, hp: engineRef.current.player.hp, coins: engineRef.current.player.coins }));
+                }
+            };
+
+            const restartGame = () => {
+                if (engineRef.current) {
+                    engineRef.current.destroy();
+                    engineRef.current = null;
+                }
+                setPlayerState({ hp: 100, coins: 0, hasWeapon: false });
+                startOverworld();
+            };
+
+            // 切換音樂靜音
+            const toggleMute = () => {
+                if (bgmRef.current) {
+                    bgmRef.current.muted = !isMuted;
+                    setIsMuted(!isMuted);
+                }
+            };
+
+            // 虛擬按鍵功能 (支援手機)
+            const handleAttack = () => {
+                if (engineRef.current) engineRef.current.keys[' '] = true;
+                setTimeout(() => {
+                    if (engineRef.current) engineRef.current.keys[' '] = false;
+                }, 100);
+            };
+
+            const currentLevel = LEVELS.find(l => l.id === currentLevelId);
+
+            const renderUI = () => {
+                switch (view) {
+                    case 'menu':
+                        return (
+                            <div className="flex-1 flex flex-col items-center justify-center p-4 text-center h-full w-full absolute z-10 top-0 left-0"
+                                 style={{ backgroundImage: 'url("背景.png")', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+                                {/* 增加半透明遮罩讓文字更清晰 */}
+                                <div className="absolute top-0 left-0 w-full h-full bg-white/70 backdrop-blur-sm z-0"></div>
+                                
+                                <div className="z-10 flex flex-col items-center">
+                                    <div className="w-32 h-32 bg-amber-200 rounded-full flex items-center justify-center mb-6 shadow-inner border-4 border-amber-300 animate-bounce">
+                                        <Icon name="cat" className="text-amber-700" size={64} />
+                                    </div>
+                                    <h1 className="text-4xl font-extrabold text-amber-900 mb-2 drop-shadow-md">小貓童話冒險</h1>
+                                    <p className="text-amber-800 mb-8 font-bold text-lg drop-shadow-sm">【動作冒險版】<br/>在大地圖中探索童話關卡並打倒野獸！</p>
+                                    <button onClick={startOverworld} className="px-8 py-4 bg-orange-500 hover:bg-orange-600 text-white rounded-2xl font-bold text-xl flex items-center justify-center gap-2 shadow-lg transition-transform transform hover:scale-105 active:scale-95">
+                                        <Icon name="play" /> 進入大地圖
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    case 'shop':
+                        return (
+                            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white p-8 rounded-3xl shadow-2xl z-20 text-center border-4 border-amber-200 w-[90%] max-w-sm">
+                                <h2 className="text-3xl mb-4 font-bold text-amber-800">喵喵商店</h2>
+                                <p className="mb-6 text-gray-600">花費 50 金幣恢復 50 點生命值</p>
+                                <div className="text-xl font-bold mb-6 text-yellow-600 flex justify-center gap-2">
+                                    持有金幣: {playerState.coins} <Icon name="coins" />
+                                </div>
+                                <button onClick={buyHealth} disabled={playerState.coins < 50 || playerState.hp >= 100} className="w-full py-3 bg-green-500 disabled:bg-gray-400 text-white rounded-xl font-bold mb-3 shadow-md">
+                                    購買回復藥水
+                                </button>
+                                <button onClick={resumeOverworld} className="w-full py-3 bg-gray-200 text-gray-700 rounded-xl font-bold hover:bg-gray-300">
+                                    離開商店
+                                </button>
+                            </div>
+                        );
+                    case 'gameover':
+                        return (
+                            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-gray-900 h-full w-full absolute z-10 top-0 left-0">
+                                <Icon name="skull" className="text-red-500 mb-6" size={80} />
+                                <h1 className="text-5xl font-extrabold text-red-500 mb-4">遊戲結束</h1>
+                                <p className="text-gray-300 mb-8 text-xl">小貓受了重傷，必須休息一下...</p>
+                                <button onClick={restartGame} className="px-8 py-4 bg-white text-gray-900 rounded-2xl font-bold text-xl shadow-lg hover:bg-gray-200">
+                                    重新開始冒險
+                                </button>
+                            </div>
+                        );
+                    case 'intro':
+                        return (
+                            <div className="absolute top-0 left-0 w-full h-full bg-black/60 flex items-center justify-center z-20 p-4 backdrop-blur-sm">
+                                <div className="bg-white max-w-md w-full rounded-3xl p-6 shadow-2xl flex flex-col relative overflow-hidden">
+                                    <div className={`absolute top-0 left-0 w-full h-3 ${currentLevel.color.split(' ')[0]}`}></div>
+                                    <h2 className="text-2xl font-bold text-center mb-4 mt-2">{currentLevel.theme} - {currentLevel.title}</h2>
+                                    <div className="bg-amber-50 p-4 rounded-2xl mb-6 min-h-[120px] flex items-center justify-center shadow-inner text-gray-700 font-medium text-center">
+                                        <p>{currentLevel.intro.join(' ')}</p>
+                                    </div>
+                                    <button onClick={() => setView('game')} className={`w-full py-4 text-white rounded-2xl font-bold text-xl shadow-md ${currentLevel.color.split(' ')[0].replace('100', '500')} hover:opacity-90`}>
+                                        開始挑戰
+                                    </button>
+                                    <button onClick={resumeOverworld} className="w-full py-3 mt-3 text-gray-500 font-bold hover:bg-gray-100 rounded-2xl">
+                                        返回地圖
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    case 'outro':
+                        return (
+                            <div className="absolute top-0 left-0 w-full h-full bg-black/60 flex items-center justify-center z-20 p-4 backdrop-blur-sm">
+                                <div className="bg-white max-w-md w-full rounded-3xl p-6 shadow-2xl flex flex-col relative overflow-hidden">
+                                    <div className={`absolute top-0 left-0 w-full h-3 ${currentLevel.color.split(' ')[0]}`}></div>
+                                    <Icon name="star" size={60} className="text-yellow-400 text-center mx-auto mb-4 animate-bounce mt-2" />
+                                    <h2 className="text-3xl font-bold text-center mb-4">挑戰成功！</h2>
+                                    <div className="bg-amber-50 p-4 rounded-2xl mb-6 min-h-[120px] flex flex-col items-center justify-center shadow-inner text-gray-700 text-center">
+                                        <p className="mb-2 font-bold">{currentLevel.outro[0]}</p>
+                                        <p className="text-sm text-gray-500">{currentLevel.outro[1]}</p>
+                                    </div>
+                                    <button onClick={resumeOverworld} className="w-full py-4 bg-emerald-500 text-white rounded-2xl font-bold text-xl shadow-md hover:bg-emerald-600">
+                                        返回大地圖
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    case 'game':
+                        return (
+                            <div className="absolute top-0 left-0 w-full h-full bg-slate-50 z-30 flex flex-col">
+                                <div className={`px-4 py-3 flex justify-between items-center ${currentLevel.color.split(' ')[0]} border-b shadow-sm`}>
+                                    <span className="font-bold text-lg text-gray-800">{currentLevel.theme}</span>
+                                    <button onClick={resumeOverworld} className="p-2 px-4 bg-white/70 hover:bg-white rounded-xl font-bold text-sm text-gray-700 shadow-sm transition-all">放棄挑戰</button>
+                                </div>
+                                <div className="flex-1 overflow-auto no-scrollbar relative p-4 flex flex-col justify-center">
+                                    {/* 載入對應的小遊戲元件 */}
+                                    {currentLevel.type === 'path' && <PathGame onWin={() => setView('outro')} />}
+                                    {currentLevel.type === 'puzzle' && <PuzzleGame onWin={() => setView('outro')} />}
+                                    {currentLevel.type === 'quiz' && <QuizGame onWin={() => setView('outro')} />}
+                                    {currentLevel.type === 'shooter' && <ShooterGame onWin={() => setView('outro')} />}
+                                    {currentLevel.type === 'combat' && <CombatGame onWin={() => setView('outro')} />}
+                                    {currentLevel.type === 'dodge' && <DodgeGame onWin={() => setView('outro')} />}
+                                </div>
+                            </div>
+                        );
+                    default: return null;
+                }
+            };
+
+            return (
+                <div className="w-full h-full relative overflow-hidden bg-gray-900 font-sans select-none">
+                    {/* 背景音樂 */}
+                    <audio ref={bgmRef} src="背景音樂.mp3" loop preload="auto"></audio>
+
+                    {/* 全域音樂開關 */}
+                    <button 
+                        onClick={toggleMute}
+                        className="absolute top-4 right-4 z-50 w-12 h-12 bg-white/80 backdrop-blur-md rounded-full shadow-lg border-2 border-gray-200 flex items-center justify-center text-gray-700 hover:bg-white active:scale-95 transition-all">
+                        <Icon name={isMuted ? "volume-xmark" : "volume-high"} size={20} />
+                    </button>
+
+                    {/* Canvas 大地圖區 (永遠在底層) */}
+                    <div className="canvas-container absolute top-0 left-0 z-0">
+                        <canvas ref={canvasRef}></canvas>
+                    </div>
+
+                    {/* HUD 抬頭顯示器 */}
+                    {view === 'overworld' && (
+                        <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 pointer-events-none">
+                            <div className="bg-white/90 px-4 py-2 rounded-2xl shadow-lg border-2 border-red-200 flex items-center gap-2">
+                                <Icon name="heart" className="text-red-500" />
+                                <div className="w-24 sm:w-32 h-4 bg-gray-200 rounded-full overflow-hidden">
+                                    <div className="h-full bg-red-500 transition-all duration-200" style={{width: `${playerState.hp}%`}}></div>
+                                </div>
+                            </div>
+                            <div className="bg-white/90 px-4 py-2 rounded-2xl shadow-lg border-2 border-yellow-200 flex items-center gap-2 font-bold text-yellow-600 w-fit">
+                                <Icon name="coins" /> {playerState.coins}
+                            </div>
+                            {playerState.hasWeapon && (
+                                <div className="bg-white/90 px-4 py-2 rounded-2xl shadow-lg border-2 border-gray-200 font-bold text-gray-700 animate-pulse w-fit">
+                                    🗡️ 已裝備
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    
+                    {/* 操作提示 & 手機版虛擬按鈕 */}
+                    {view === 'overworld' && (
+                        <div className="absolute bottom-4 right-4 z-10 flex flex-col items-end gap-2">
+                            <div className="bg-black/50 text-white px-4 py-2 rounded-lg text-sm pointer-events-none hidden sm:block">
+                                WASD: 移動 | 空白鍵: 攻擊
+                            </div>
+                            {/* 手機版攻擊鍵 */}
+                            <button 
+                                onPointerDown={handleAttack}
+                                className="sm:hidden w-20 h-20 bg-white/20 backdrop-blur-md rounded-full border-4 border-white/50 text-white text-3xl flex items-center justify-center active:bg-white/40 active:scale-95 transition-all shadow-xl">
+                                🗡️
+                            </button>
+                        </div>
+                    )}
+
+                    {/* React UI 覆蓋層 */}
+                    {renderUI()}
+                </div>
+            );
+        }
+
+        // ==========================================
+        // 關卡小遊戲元件
+        // ==========================================
+        
+        // 關卡 1: 小紅帽路徑 (尋找安全路線)
+        const PathGame = ({ onWin }) => {
+            const [pos, setPos] = useState({x:0, y:0});
+            const wolves = [{x:1, y:1}, {x:2, y:0}, {x:0, y:3}, {x:2, y:2}];
+            const handleMove = (nx, ny) => {
+                if (Math.abs(pos.x - nx) + Math.abs(pos.y - ny) === 1) {
+                    setPos({x: nx, y: ny});
+                    if (wolves.some(w => w.x === nx && w.y === ny)) {
+                        setPos({x:0, y:0}); // 踩到狼重來
+                    } else if (nx === 3 && ny === 3) {
+                        setTimeout(onWin, 500);
+                    }
+                }
+            };
+            return (
+                <div className="flex flex-col items-center w-full max-w-sm mx-auto p-4 bg-white rounded-3xl shadow-lg border-4 border-red-200">
+                    <p className="mb-6 text-center font-bold text-red-800 text-lg">點擊相鄰草地前進，<br/>避開野狼抵達奶奶家！</p>
+                    <div className="grid grid-cols-4 gap-2 bg-green-800 p-3 rounded-2xl w-full aspect-square">
+                        {Array.from({length: 16}).map((_, i) => {
+                            const x = i % 4, y = Math.floor(i / 4);
+                            const isP = pos.x === x && pos.y === y;
+                            const isW = wolves.some(w => w.x === x && w.y === y);
+                            return (
+                                <div key={i} onClick={() => handleMove(x, y)} 
+                                     className={`rounded-xl flex items-center justify-center text-3xl sm:text-4xl cursor-pointer transition-all shadow-inner 
+                                     ${isP ? 'bg-red-400 scale-95' : 'bg-green-500 hover:bg-green-400 active:scale-95'}`}>
+                                    {isP ? '👧' : isW ? '🐺' : (x===3&&y===3 ? '🏠' : '')}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        };
+
+        // 關卡 2: 灰姑娘拼圖 (尋找碎片) - 補齊
+        const PuzzleGame = ({ onWin }) => {
+            const [pieces, setPieces] = useState([false, false, false, false]);
+            const clickPiece = (idx) => {
+                const newPieces = [...pieces];
+                newPieces[idx] = true;
+                setPieces(newPieces);
+                if (newPieces.every(p => p)) {
+                    setTimeout(onWin, 600);
+                }
+            };
+            return (
+                <div className="flex flex-col items-center w-full max-w-sm mx-auto p-6 bg-white rounded-3xl shadow-lg border-4 border-blue-200">
+                    <p className="mb-6 text-center font-bold text-blue-800 text-lg">點擊找出隱藏的 4 個禮服碎片！</p>
+                    <div className="grid grid-cols-2 gap-4 w-full">
+                        {pieces.map((found, i) => (
+                            <div key={i} onClick={() => clickPiece(i)} 
+                                 className={`aspect-square flex items-center justify-center rounded-2xl text-5xl cursor-pointer transition-all duration-300 transform shadow-md
+                                 ${found ? 'bg-blue-100 scale-95 border-2 border-blue-300' : 'bg-blue-500 hover:bg-blue-400 active:scale-95 text-white'}`}>
+                                {found ? '👗' : '❓'}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        // 關卡 3: 青蛙王子問答 (誠實考驗) - 補齊
+        const QuizGame = ({ onWin }) => {
+            const [step, setStep] = useState(0);
+            const [errorMsg, setErrorMsg] = useState("");
+            
+            const questions = [
+                { q: "公主答應青蛙只要幫忙撿回金球，就會讓他上桌吃飯。公主應該遵守承諾嗎？", ans: true },
+                { q: "可是青蛙長得很醜，公主可以偷偷假裝忘記這個約定嗎？", ans: false },
+                { q: "如果因為守信而遇到一點麻煩，是不是還是應該保持誠實呢？", ans: true }
+            ];
+
+            const answer = (val) => {
+                if (val === questions[step].ans) {
+                    setErrorMsg("");
+                    if (step === questions.length - 1) {
+                        setTimeout(onWin, 500);
+                    } else {
+                        setStep(s => s + 1);
+                    }
+                } else {
+                    setErrorMsg("不對喔，再仔細想想！");
+                }
+            };
+
+            return (
+                <div className="flex flex-col items-center w-full max-w-sm mx-auto p-6 bg-white rounded-3xl shadow-lg border-4 border-green-200">
+                    <div className="text-6xl mb-4">🐸</div>
+                    <p className="mb-4 text-center font-bold text-green-800 text-lg">誠實與守信的考驗</p>
+                    
+                    <div className="bg-green-50 w-full p-4 rounded-xl mb-6 min-h-[100px] flex items-center justify-center text-center shadow-inner border border-green-100">
+                        <p className="text-gray-700 font-medium">{questions[step].q}</p>
+                    </div>
+
+                    {errorMsg && <p className="text-red-500 font-bold mb-4 animate-pulse">{errorMsg}</p>}
+
+                    <div className="flex gap-4 w-full">
+                        <button onClick={() => answer(true)} className="flex-1 py-4 bg-emerald-500 text-white rounded-2xl font-bold text-xl shadow-md hover:bg-emerald-600 active:scale-95 transition-all">
+                            是的 ⭕
+                        </button>
+                        <button onClick={() => answer(false)} className="flex-1 py-4 bg-rose-500 text-white rounded-2xl font-bold text-xl shadow-md hover:bg-rose-600 active:scale-95 transition-all">
+                            不是 ❌
+                        </button>
+                    </div>
+                    <div className="mt-4 text-sm text-gray-400 font-bold">進度: {step + 1} / {questions.length}</div>
+                </div>
+            );
+        };
+
+        // 關卡 4: 睡美人射擊 (清除荊棘) - 補齊
+        const ShooterGame = ({ onWin }) => {
+            const [thorns, setThorns] = useState(
+                Array.from({length: 8}).map(() => ({ 
+                    x: 10 + Math.random() * 70, 
+                    y: 10 + Math.random() * 70, 
+                    active: true 
+                }))
+            );
+
+            const clickThorn = (idx) => {
+                const newThorns = [...thorns];
+                if (newThorns[idx].active) {
+                    newThorns[idx].active = false;
+                    setThorns(newThorns);
+                    if (newThorns.every(t => !t.active)) {
+                        setTimeout(onWin, 500);
+                    }
+                }
+            };
+
+            return (
+                <div className="w-full max-w-sm mx-auto h-[450px] flex flex-col">
+                    <p className="mb-4 text-center font-bold text-purple-800 text-lg bg-white/80 p-2 rounded-xl">快速點擊淨化所有黑荊棘！</p>
+                    <div className="relative flex-1 bg-purple-900 rounded-3xl overflow-hidden border-4 border-purple-300 shadow-xl">
+                        {/* 城堡背景意象 */}
+                        <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 text-8xl opacity-50">🏰</div>
+                        
+                        {thorns.map((t, i) => (
+                            t.active && (
+                                <div key={i} onClick={() => clickThorn(i)} 
+                                     className="absolute text-4xl sm:text-5xl cursor-pointer hover:scale-110 active:scale-75 transition-transform"
+                                     style={{ left: `${t.x}%`, top: `${t.y}%` }}>
+                                    🥀
+                                </div>
+                            )
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        // 關卡 5: 白雪公主回合制對戰
+        const CombatGame = ({ onWin }) => {
+            const [playerHp, setPlayerHp] = useState(100);
+            const [enemyHp, setEnemyHp] = useState(100);
+            const [message, setMessage] = useState("戰鬥開始！選擇你的行動。");
+            const [playerTurn, setPlayerTurn] = useState(true);
+
+            const handleAction = (type) => {
+                if (!playerTurn) return;
+                setPlayerTurn(false);
+                
+                let dmg = 0;
+                if (type === 'attack') {
+                    dmg = Math.floor(Math.random() * 20) + 15; // 造成 15~34 點傷害
+                    setEnemyHp(h => Math.max(0, h - dmg));
+                    setMessage(`小貓發動攻擊，造成了 ${dmg} 點傷害！`);
+                } else if (type === 'heal') {
+                    const heal = Math.floor(Math.random() * 20) + 20; // 回復 20~39 點血量
+                    setPlayerHp(h => Math.min(100, h + heal));
+                    setMessage(`小貓吃下了草藥，恢復了 ${heal} 點生命！`);
+                }
+
+                setTimeout(() => {
+                    if (enemyHp - dmg <= 0) {
+                        setMessage("勝利！你成功打敗了毒蘋果怪物！");
+                        setTimeout(onWin, 1500);
+                    } else {
+                        enemyTurn();
+                    }
+                }, 1500);
+            };
+
+            const enemyTurn = () => {
+                const dmg = Math.floor(Math.random() * 15) + 10; // 怪物造成 10~24 點傷害
+                setMessage(`毒蘋果怪物噴灑毒汁，造成 ${dmg} 點傷害！`);
+                setPlayerHp(h => {
+                    const newHp = Math.max(0, h - dmg);
+                    if (newHp <= 0) {
+                        setTimeout(() => {
+                            setMessage("小貓被打敗了，重新挑戰！");
+                            setTimeout(() => {
+                                setPlayerHp(100);
+                                setEnemyHp(100);
+                                setMessage("戰鬥開始！選擇你的行動。");
+                                setPlayerTurn(true);
+                            }, 1500);
+                        }, 1500);
+                    } else {
+                        setTimeout(() => {
+                            setMessage("輪到你了！");
+                            setPlayerTurn(true);
+                        }, 1500);
+                    }
+                    return newHp;
+                });
+            };
+
+            return (
+                <div className="w-full max-w-sm mx-auto flex flex-col items-center p-4 bg-white rounded-3xl shadow-lg border-4 border-yellow-200">
+                    <p className="mb-6 font-bold text-center text-yellow-800 text-lg">打敗毒蘋果怪物！</p>
+                    
+                    <div className="flex justify-between w-full mb-8 px-2 items-end">
+                        <div className="flex flex-col items-center w-[45%]">
+                            <span className="text-5xl mb-3 drop-shadow-md">🐱</span>
+                            <div className="w-full bg-gray-200 h-4 rounded-full overflow-hidden border border-gray-300 relative">
+                                <div className="bg-green-500 h-full transition-all duration-300" style={{ width: `${playerHp}%` }}></div>
+                            </div>
+                            <span className="text-xs font-bold mt-2 text-gray-600">{playerHp} / 100</span>
+                        </div>
+                        
+                        <div className="text-2xl font-extrabold text-yellow-500 mb-6 px-2">VS</div>
+
+                        <div className="flex flex-col items-center w-[45%]">
+                            <span className={`text-6xl mb-3 drop-shadow-md ${playerTurn ? 'animate-pulse' : ''}`}>🍎</span>
+                            <div className="w-full bg-gray-200 h-4 rounded-full overflow-hidden border border-gray-300 relative">
+                                <div className="bg-red-500 h-full transition-all duration-300" style={{ width: `${enemyHp}%` }}></div>
+                            </div>
+                            <span className="text-xs font-bold mt-2 text-gray-600">{enemyHp} / 100</span>
+                        </div>
+                    </div>
+                    
+                    <div className="bg-yellow-50 p-4 rounded-2xl border border-yellow-200 w-full mb-6 text-center shadow-inner font-bold text-gray-700 text-md min-h-[80px] flex items-center justify-center">
+                        {message}
+                    </div>
+
+                    <div className="flex gap-4 w-full">
+                        <button disabled={!playerTurn} onClick={() => handleAction('attack')} 
+                                className="flex-1 py-4 bg-red-500 text-white rounded-2xl font-bold text-xl shadow-md hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed transform active:scale-95 transition-all">
+                            攻擊 🗡️
+                        </button>
+                        <button disabled={!playerTurn} onClick={() => handleAction('heal')} 
+                                className="flex-1 py-4 bg-green-500 text-white rounded-2xl font-bold text-xl shadow-md hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed transform active:scale-95 transition-all">
+                            回復 💖
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        // 關卡 6: 傑克閃避小遊戲
+        const DodgeGame = ({ onWin }) => {
+            const [pos, setPos] = useState(50);
+            const [rocks, setRocks] = useState([]);
+            const [score, setScore] = useState(0);
+            
+            useEffect(() => {
+                const interval = setInterval(() => {
+                    setScore(s => {
+                        if (s >= 10) { clearInterval(interval); onWin(); return s; }
+                        return s + 1;
+                    });
+                    setRocks(prev => [...prev.map(r => ({...r, y: r.y + 20})).filter(r => r.y < 100), { x: Math.random() * 80 + 10, y: -10 }]);
+                }, 500);
+                return () => clearInterval(interval);
+            }, [onWin]);
+
+            // 提供拖曳或點擊控制
+            const moveLeft = () => setPos(p => Math.max(10, p - 20));
+            const moveRight = () => setPos(p => Math.min(90, p + 20));
+
+            return (
+                <div className="w-full max-w-sm mx-auto flex flex-col">
+                    <div className="h-[400px] relative border-4 border-emerald-300 bg-sky-200 rounded-3xl overflow-hidden shadow-lg flex-1">
+                        <p className="absolute top-4 left-0 w-full text-center font-bold text-emerald-800 bg-white/60 py-1 z-20">點擊左右閃避落石！(撐過10秒)</p>
+                        <div className="absolute top-14 left-4 font-bold text-xl text-blue-900 bg-white/80 px-3 py-1 rounded-lg z-20">時間: {score}/10</div>
+                        
+                        {/* 觸控區域 */}
+                        <div className="absolute top-0 left-0 w-1/2 h-full z-10 cursor-pointer" onClick={moveLeft}></div>
+                        <div className="absolute top-0 right-0 w-1/2 h-full z-10 cursor-pointer" onClick={moveRight}></div>
+                        
+                        {/* 玩家 */}
+                        <div className="absolute text-5xl bottom-6 transition-all duration-150 ease-out z-0" style={{ left: `${pos}%`, transform: 'translateX(-50%)' }}>🐱</div>
+                        
+                        {/* 落石 */}
+                        {rocks.map((r, i) => (
+                            <div key={i} className="absolute text-4xl z-0 transition-all duration-500 ease-linear" style={{ left: `${r.x}%`, top: `${r.y}%`, transform: 'translateX(-50%)' }}>🪨</div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
